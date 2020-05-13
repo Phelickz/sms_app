@@ -6,103 +6,187 @@ import 'package:sms/sms.dart';
 import 'package:timeago/timeago.dart' as timeago;
 
 import 'contacts.dart';
+import 'conversation.dart';
 import 'messagePage.dart';
+import 'sent.dart';
 
-class Home extends StatefulWidget {
+
+class Threads extends StatefulWidget {
   @override
-  _HomeState createState() => _HomeState();
+  State<Threads> createState() => new _ThreadsState();
 }
 
-class _HomeState extends State<Home> {
-  SmsQuery query = new SmsQuery();
-  ContactQuery _query = new ContactQuery();
+class _ThreadsState extends State<Threads> with TickerProviderStateMixin {
+  bool _loading = true;
+  List<SmsThread> _threads;
+  UserProfile _userProfile;
+  final SmsQuery _query = new SmsQuery();
+  final SmsReceiver _receiver = new SmsReceiver();
+  final UserProfileProvider _userProfileProvider = new UserProfileProvider();
+  final SmsSender _smsSender = new SmsSender();
 
-  List<Contact> contacts =[];
-  List<SmsMessage> messages;
+  // Animation
+  AnimationController opacityController;
+
   @override
   void initState() {
-    // TODO: implement initState
     super.initState();
-  
-    // getAllSms();
-  }
+    _receiver.onSmsReceived.listen(_onSmsReceived);
+    _userProfileProvider.getUserProfile().then(_onUserProfileLoaded);
+    _query.getAllThreads.then(_onThreadsLoaded);
+    _smsSender.onSmsDelivered.listen(_onSmsDelivered);
 
-  Future<List<SmsMessage>> getAllSms() async {
-    List<SmsMessage> message = await query.getAllSms;
-    for(int i =0; i < message.length; i++){
-      Contact oneContact = await _query.queryContact(message[i].address);
-      // print(oneContact.photo.toString());
-      contacts.add(oneContact);
-    }
-    setState(() {
-      messages = message;
-    });
-    // print(message);
-    
-    return message;
+    // Animation
+    opacityController = new AnimationController(
+        duration: const Duration(milliseconds: 500), vsync: this, value: 0.0);
   }
 
   @override
   Widget build(BuildContext context) {
-    return Scaffold(
-      appBar: AppBar(
-        title: Text('Messages')
+    return new Scaffold(
+      appBar: new AppBar(
+        title: new Text('SMS Conversations'),
       ),
-      body: FutureBuilder<List<SmsMessage>>(
-        future: getAllSms(),
-        builder: (context, snapshot) {
-          if (snapshot.connectionState == ConnectionState.none &&
-              snapshot.data == null) {
-            print(snapshot.data);
-            return Container(
-              child: Text('the data is ${snapshot.data}'),
-            );
-          } else {
-            return snapshot.hasData
-                ? ListView.builder(
-                    itemBuilder: (context, index) {
-                      // Uint8List fullSize = contacts[index].photo.bytes;
-                      // Uint8List thumbnail = contacts[index].thumbnail.bytes;
-
-                      return snapshot.data.isNotEmpty
-                          ? InkWell(
-                              onTap: () {
-                                Navigator.push(
-                                    context,
-                                    MaterialPageRoute(
-                                        builder: (context) => MessagePage(
-                                              sender:
-                                                  snapshot.data[index].sender,
-                                              threadId: snapshot.data[index].threadId,
-                                              name: contacts[index].fullName,
-                                            )));
-                              },
-                              child: ListTile(
-                                leading: CircleAvatar(
-                                  // backgroundImage: MemoryImage(fullSize),
-                                ),
-                                title: Text(contacts[index].fullName),
-                                subtitle: Text(snapshot.data[index].body),
-                                trailing: Text(
-                                    timeago.format(snapshot.data[index].date)),
-                              ),
-                            )
-                          : Center(
-                              child: Text('no messages'),
-                            );
-                    },
-                    itemCount:
-                        snapshot.data.length == null ? 1 : snapshot.data.length,
-                  )
-                : CircularProgressIndicator();
-          }
-        },
+      body: _getThreadsWidgets(),
+      floatingActionButton: new FloatingActionButton(
+        onPressed: () {},
+        child: new Icon(Icons.add),
       ),
-      floatingActionButton: FloatingActionButton(
-        child: Icon(Icons.add),
-        onPressed: (){
-          Navigator.push(context, MaterialPageRoute(builder: (context) => Contacts()));
-        },),
     );
   }
+
+  Widget _getThreadsWidgets() {
+    if (_loading) {
+      return new Center(
+        child: new CircularProgressIndicator(),
+      );
+    } else {
+      return new FadeTransition(
+        opacity: opacityController,
+        child: new ListView.builder(
+            itemCount: _threads.length,
+            itemBuilder: (context, index) {
+              return new Thread(_threads[index], _userProfile);
+            }),
+      );
+    }
+  }
+
+  void _onSmsReceived(SmsMessage sms) async {
+    var thread = _threads.singleWhere((thread) {
+      return thread.id == sms.threadId;
+    }, orElse: () {
+      var thread = new SmsThread(sms.threadId);
+      _threads.insert(0, thread);
+      return thread;
+    });
+
+    thread.addNewMessage(sms);
+    await thread.findContact();
+
+    int index = _threads.indexOf(thread);
+    if (index != 0) {
+      _threads.removeAt(index);
+      _threads.insert(0, thread);
+    }
+
+    setState(() {});
+  }
+
+  void _onThreadsLoaded(List<SmsThread> threads) {
+    _threads = threads;
+    _checkIfLoadCompleted();
+  }
+
+  void _onUserProfileLoaded(UserProfile userProfile) {
+    _userProfile = userProfile;
+    _checkIfLoadCompleted();
+  }
+
+  void _checkIfLoadCompleted() {
+    if (_threads != null && _userProfile != null) {
+      setState(() {
+        _loading = false;
+        opacityController.animateTo(1.0, curve: Curves.easeIn);
+      });
+    }
+  }
+
+  void _onSmsDelivered(SmsMessage sms) async {
+    final contacts = new ContactQuery();
+    Contact contact = await contacts.queryContact(sms.address);
+    final snackBar = new SnackBar(
+        content: new Text('Message to ${contact.fullName} delivered'));
+    Scaffold.of(context).showSnackBar(snackBar);
+  }
 }
+
+
+
+
+
+class Badge extends StatelessWidget {
+  Badge(this.messages) : super();
+
+  final List<SmsMessage> messages;
+
+  @override
+  Widget build(BuildContext context) {
+    if (_countUnreadMessages() == 0) {
+      return new Container(
+          // color: Colors.red,
+          );
+    }
+
+    return SizedBox(
+      child: new Container(
+        width: 10,
+        padding: const EdgeInsets.all(8.0),
+        decoration:
+            new ShapeDecoration(shape: new CircleBorder(), color: Colors.red),
+        child: new Text(_countUnreadMessages().toString(),
+            style: new TextStyle(color: Colors.white)),
+      ),
+    );
+  }
+
+  int _countUnreadMessages() {
+    return messages
+        .where((msg) => msg.kind == SmsMessageKind.Received && !msg.isRead)
+        .length;
+  }
+}
+
+
+class Thread extends StatelessWidget {
+  Thread(SmsThread thread, UserProfile userProfile)
+      : thread = thread,
+        userProfile = userProfile,
+        super(key: new ObjectKey(thread));
+
+  final SmsThread thread;
+  final UserProfile userProfile;
+
+  @override
+  Widget build(BuildContext context) {
+    return new ListTile(
+      dense: true,
+      leading: new Avatar(thread.contact.thumbnail, thread.contact.fullName),
+      title: new Text(thread.contact.fullName ?? thread.contact.address),
+      subtitle: new Text(
+        thread.messages.first.body.trim(),
+        maxLines: 2,
+        overflow: TextOverflow.ellipsis,
+      ),
+      trailing: SizedBox(
+        width: 40,
+        height: 40,
+        child: new Badge(thread.messages)),
+      onTap: () => _showConversation(context),
+    );
+  }
+
+  void _showConversation(BuildContext context) {
+    Navigator.of(context).push(new MaterialPageRoute(
+        builder: (context) => new Conversation(thread, userProfile)));
+  }}

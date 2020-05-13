@@ -1,13 +1,15 @@
 import 'package:flutter/material.dart';
 import 'package:sms/sms.dart';
 import 'package:timeago/timeago.dart' as timeago;
+import 'package:url_launcher/url_launcher.dart';
 
 class MessagePage extends StatefulWidget {
   final sender;
   final threadId;
   final name;
 
-  const MessagePage({Key key, this.sender, this.threadId, this.name}) : super(key: key);
+  const MessagePage({Key key, this.sender, this.threadId, this.name})
+      : super(key: key);
 
   @override
   _MessagePageState createState() => _MessagePageState();
@@ -16,31 +18,51 @@ class MessagePage extends StatefulWidget {
 class _MessagePageState extends State<MessagePage> {
   SmsQuery query = new SmsQuery();
 
+  SmsSender sender = new SmsSender();
+
+  SimCardsProvider provider = new SimCardsProvider();
+
+  TextEditingController _textEditingController = TextEditingController();
+
+  final _formKey = GlobalKey<FormState>();
   Future<List<SmsMessage>> getMessages() async {
     List<SmsMessage> message = await query.querySms(
-      threadId: this.widget.threadId,
+      // threadId: this.widget.threadId,
+      sort: true,
+      address: this.widget.sender,
       kinds: [SmsQueryKind.Inbox, SmsQueryKind.Sent],
     );
     return message;
   }
 
+  Future<void> _makePhoneCall(String url) async {
+    if (await canLaunch(url)) {
+      await launch(url);
+    } else {
+      throw 'Could not launch $url';
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-        appBar: AppBar(title: Text(this.widget.name)),
+        backgroundColor: Colors.white,
+        appBar: AppBar(actions: <Widget>[
+          IconButton(
+            icon: Icon(Icons.phone),
+            onPressed: () => _makePhoneCall('tel:$this.widget.sender'),
+          ),
+        ], title: Text(this.widget.sender)),
         body: Stack(
-          children: <Widget>[
-            _messageBuilder()
-          ],
+          children: <Widget>[_messageBuilder(), _textEditor()],
         ));
   }
 
   Widget _messageBuilder() {
     return Positioned(
-      
       child: Container(
         padding: EdgeInsets.symmetric(horizontal: 10, vertical: 10),
-        color: Colors.black,
+        color: Colors.white,
         width: MediaQuery.of(context).size.width,
         height: MediaQuery.of(context).size.height * 0.8,
         child: Builder(builder: (BuildContext context) {
@@ -86,7 +108,8 @@ class _MessagePageState extends State<MessagePage> {
     );
   }
 
-  Widget _textMessageBubble(bool isByMe, String _message, DateTime _timestamp, Stream<SmsMessageState> smsMessageState) {
+  Widget _textMessageBubble(bool isByMe, String _message, DateTime _timestamp,
+      Stream<SmsMessageState> smsMessageState) {
     return Container(
       margin: EdgeInsets.only(bottom: 24),
       alignment: isByMe ? Alignment.centerRight : Alignment.centerLeft,
@@ -106,7 +129,7 @@ class _MessagePageState extends State<MessagePage> {
                     (_message.length / 20 * 5.0),
                 maxWidth: MediaQuery.of(context).size.width * 2 / 3),
             child: SingleChildScrollView(
-                          child: Column(
+              child: Column(
                 mainAxisSize: MainAxisSize.max,
                 mainAxisAlignment: MainAxisAlignment.spaceAround,
                 crossAxisAlignment: CrossAxisAlignment.start,
@@ -134,5 +157,74 @@ class _MessagePageState extends State<MessagePage> {
             )),
       ),
     );
+  }
+
+  Widget _textEditor() {
+    return Align(
+      alignment: Alignment.bottomCenter,
+      child: Builder(builder: (BuildContext _context) {
+        return Container(
+          decoration: BoxDecoration(
+            color: Colors.grey[200],
+            borderRadius: BorderRadius.circular(10),
+          ),
+          margin: EdgeInsets.symmetric(vertical: 7),
+          width: MediaQuery.of(context).size.width * 0.98,
+          child: Form(
+            key: _formKey,
+            child: Row(
+              children: <Widget>[
+                Container(
+                    padding: EdgeInsets.only(left: 10),
+                    width: MediaQuery.of(context).size.width * 0.85,
+                    child: TextFormField(
+                      validator: Validator.validate,
+                      controller: _textEditingController,
+                      decoration: InputDecoration(
+                          border: InputBorder.none,
+                          hintText: 'Type your message'),
+                    )),
+                IconButton(
+                  icon: Icon(Icons.send),
+                  onPressed: () async {
+                    if (_formKey.currentState.validate()) {
+                      // _formKey.currentState.save();
+                      List<SimCard> card = await provider.getSimCards();
+                      SmsMessage message = new SmsMessage(
+                          this.widget.sender, _textEditingController.text);
+                      message.onStateChanged.listen((state) {
+                        if (state == SmsMessageState.Sent) {
+                          Scaffold.of(_context).showSnackBar(SnackBar(
+                              backgroundColor: Colors.green,
+                              content: Text('Message Sent Succesfully')));
+                        } else if (state == SmsMessageState.Fail) {
+                          Scaffold.of(_context).showSnackBar(SnackBar(
+                              backgroundColor: Colors.red,
+                              content: Text('Message could not be sent')));
+                        }
+                      });
+                      sender.sendSms(message, simCard: card[0]);
+                      _messageBuilder();
+                      _textEditingController.clear();
+                      FocusScope.of(_context).unfocus();
+                    }
+                  },
+                )
+              ],
+            ),
+          ),
+        );
+      }),
+    );
+  }
+}
+
+class Validator {
+  static String validate(String value) {
+    if (value.isEmpty) {
+      return "Field cannot be empty";
+    }
+
+    return null;
   }
 }
